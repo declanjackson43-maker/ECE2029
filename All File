@@ -1,0 +1,362 @@
+module TB_CombinedDispatch;
+
+    reg clk, rst;
+    reg A, P1, P2, P3;
+    reg T1, T0;
+    wire engine, ambulance, ladder;
+    wire [2:0] dispatch_state;
+    wire [1:0] priority_state;
+    wire C_sel_out;
+
+    CombinedDispatch DUT(
+        .clk(clk), .rst(rst),
+        .A(A), .P1(P1), .P2(P2), .P3(P3),
+        .T1(T1), .T0(T0),
+        .engine(engine), .ambulance(ambulance), .ladder(ladder),
+        .dispatch_state(dispatch_state),
+        .priority_state(priority_state),
+        .C_sel_out(C_sel_out)
+    );
+
+    always #5 clk = ~clk; // 10ns period
+
+    initial begin
+        clk = 0; rst = 1;
+        A=0; P1=0; P2=0; P3=0; T1=0; T0=0;
+        #15 rst=0;
+
+        // TEST 1: P1 → Fire
+        A=1; P1=1; P2=0; P3=0; T1=0; T0=0;
+        #40; A=0; P1=0; #40;
+
+        // TEST 2: P2 → Medical
+        A=1; P1=0; P2=1; P3=0; T1=0; T0=1;
+        #40; A=0; P2=0; #40;
+
+        // TEST 3: P3 → Technical
+        A=1; P1=0; P2=0; P3=1; T1=1; T0=0;
+        #40; A=0; P3=0; #40;
+
+        $display("ALL TESTS COMPLETE");
+        $stop;
+    end
+
+    initial begin
+        $monitor("Time=%0t | A=%b P1=%b P2=%b P3=%b | Priority=%b | C_sel=%b | Dispatch=%b | Engine=%b Ambulance=%b Ladder=%b",
+                 $time, A,P1,P2,P3,priority_state,C_sel_out,dispatch_state,engine,ambulance,ladder);
+    end
+
+endmodule
+
+module CombinedDispatch(
+   input clk,
+    input rst,
+
+    // Priority inputs
+    input A,
+    input P1, P2, P3,
+
+    // Dispatch inputs
+    input T1, T0,
+
+    // Outputs
+    output engine,
+    output ambulance,
+    output ladder,
+    output [2:0] dispatch_state,
+    output [1:0] priority_state,
+    output C_sel_out
+);
+
+    // Wire connecting Priority → Dispatch
+    wire C_wire;
+
+    // Instantiate Priority FSM
+    Priority_Dispatch PD (
+        .clk(clk),
+        .rst(rst),
+        .A(A),
+        .P1(P1),
+        .P2(P2),
+        .P3(P3),
+        .C_sel(C_wire),          // <-- This will feed Dispatch
+        .next_state(priority_state)
+    );
+
+    assign C_sel_out = C_wire;   // optional for waveform/debug
+
+    // Instantiate Dispatch FSM
+    Dispatch D (
+        .clk(clk),
+        .rst(rst),
+        .C(C_wire),              // <-- Priority drives S1 input
+        .T1(T1),
+        .T0(T0),
+        .engine(engine),
+        .ambulance(ambulance),
+        .ladder(ladder),
+        .state_out(dispatch_state)
+    );
+
+endmodule
+
+module Dispatch(
+    input clk,
+    input rst,       
+    input C,          // from Priority_Dispatch
+    input T1,        
+    input T0,        
+    output reg engine,    
+    output reg ambulance,
+    output reg ladder,
+    output [2:0] state_out  
+);
+
+    // States
+    localparam IDLE        = 3'b000;
+    localparam ASSESS      = 3'b001;
+    localparam FIRE_CALL   = 3'b010;
+    localparam MED_CALL    = 3'b011;
+    localparam TECH_CALL   = 3'b100;
+    localparam SEL_ENGINE  = 3'b101;
+    localparam SEL_AMB     = 3'b110;
+    localparam SEL_LADDER  = 3'b111;
+
+    reg [2:0] state, next_state;
+
+    assign state_out = state;
+
+    // State register
+    always @(posedge clk or posedge rst) begin
+        if (rst)
+            state <= IDLE;
+        else
+            state <= next_state;
+    end
+
+    // Next state logic
+    always @(*) begin
+        next_state = state;
+
+        case (state)
+            IDLE:       next_state = C ? ASSESS : IDLE;
+            ASSESS: begin
+                case ({T1, T0})
+                    2'b00: next_state = FIRE_CALL;
+                    2'b01: next_state = MED_CALL;
+                    2'b10: next_state = TECH_CALL;
+                    default: next_state = IDLE;
+                endcase
+            end
+            FIRE_CALL:   next_state = SEL_ENGINE;
+            MED_CALL:    next_state = SEL_AMB;
+            TECH_CALL:   next_state = SEL_LADDER;
+            SEL_ENGINE,
+            SEL_AMB,
+            SEL_LADDER:  next_state = IDLE;
+            default:     next_state = IDLE;
+        endcase
+    end
+
+    // Output logic: fire **only** in SEL states
+    always @(*) begin
+        engine    = 0;
+        ambulance = 0;
+        ladder    = 0;
+
+        case (state)
+            SEL_ENGINE:  engine    = 1;
+            SEL_AMB:     ambulance = 1;
+            SEL_LADDER:  ladder    = 1;
+        endcase
+    end
+
+endmodule
+
+module TB_Dispatch;
+reg clk;
+reg rst;
+reg C;
+reg T1, T0;
+wire engine, ambulance, ladder;
+wire [2:0] state_out;   
+
+Dispatch DUT (.clk(clk),.rst(rst),.C(C),.T1(T1),.T0(T0),.engine(engine),.ambulance(ambulance),.ladder(ladder),.state_out(state_out));
+
+    always #5 clk = ~clk;
+    task send_call;
+        input [1:0] type;
+        begin
+            C  = 1'b1;
+            {T1, T0} = type;
+            @(posedge clk); 
+            @(posedge clk); 
+            @(posedge clk);
+            @(posedge clk); 
+            C = 1'b0;
+            {T1, T0} = 2'b00;
+        end
+    endtask
+
+    always @(posedge clk) begin
+        $display("Time=%0t | rst=%b | C=%b | T=%b%b | State=%b | engine=%b ambulance=%b ladder=%b",
+                 $time, rst, C, T1, T0, state_out, engine, ambulance, ladder);
+    end
+
+    initial begin
+        $dumpfile("Dispatch.vcd");
+        $dumpvars(0, TB_Dispatch); 
+        $dumpvars(0, DUT.state);    
+
+        clk = 0;
+        rst = 1;
+        C   = 0;
+        T1  = 0;
+        T0  = 0;
+
+        repeat (2) @(posedge clk);
+        rst = 0;
+
+        // ---- Test 1: FIRE CALL (00) ----
+        send_call(2'b00);
+
+        // ---- Test 2: MEDICAL CALL (01) ----
+        send_call(2'b01);
+
+        // ---- Test 3: TECHNICAL CALL (10) ----
+        send_call(2'b10);
+
+        // Extra idle time
+        repeat (4) @(posedge clk);
+
+        $finish;
+    end
+
+endmodule
+
+
+module Priority_Dispatch(
+    input clk,
+    input rst,
+    input A,
+    input P1, P2, P3,
+    output reg C_sel,
+    output [1:0] next_state   // matches your TB
+);
+
+    // State encoding
+    localparam IDLE   = 2'b00;
+    localparam ASSESS = 2'b01;
+    localparam WAIT   = 2'b10;
+    localparam SEND   = 2'b11;
+
+    reg [1:0] state;
+    reg [1:0] next_state_reg;    // internal next state
+    reg [1:0] prev_state;        // stores previous state for pulse generation
+
+    assign next_state = next_state_reg;
+
+    // State register + C_sel pulse generation
+    always @(posedge clk or posedge rst) begin
+        if (rst) begin
+            state       <= IDLE;
+            prev_state  <= IDLE;
+            C_sel       <= 0;
+        end else begin
+            state <= next_state_reg;
+
+            // Generate 1-cycle C_sel pulse when entering SEND
+            C_sel <= (next_state_reg == SEND && prev_state != SEND);
+
+            // Update previous state for next cycle
+            prev_state <= state;
+        end
+    end
+
+    // Next state logic
+    always @(*) begin
+        next_state_reg = state;
+        case (state)
+            IDLE: begin
+                if (A) begin
+                    if (P1)        next_state_reg = SEND;
+                    else if (P2)   next_state_reg = ASSESS;
+                    else if (P3)   next_state_reg = ASSESS;
+                    else            next_state_reg = IDLE;
+                end else begin
+                    next_state_reg = IDLE;
+                end
+            end
+
+            ASSESS: begin
+                if (P2)         next_state_reg = SEND;
+                else if (P3)    next_state_reg = WAIT;
+                else            next_state_reg = ASSESS;
+            end
+
+            WAIT: begin
+                if (P3)         next_state_reg = SEND;
+                else            next_state_reg = WAIT;
+            end
+
+            SEND:           next_state_reg = IDLE;
+
+            default:        next_state_reg = IDLE;
+        endcase
+    end
+
+endmodule
+
+module TB_Priority_Dispatch;
+reg clk;
+reg rst;
+reg A;
+reg P1, P2, P3;
+wire C_sel;
+wire [1:0] next_state;
+
+Priority_Dispatch DUT (.clk(clk),.rst(rst),.A(A),.P1(P1),.P2(P2),.P3(P3),.C_sel(C_sel),.next_state(next_state));
+
+    initial clk = 0;
+    always #5 clk = ~clk;
+
+    task send_call;
+        input [2:0] priority; 
+        begin
+            A  = 1;
+            {P3, P2, P1} = priority;
+            wait(C_sel == 1);
+            @(posedge clk); 
+            A  = 0;
+            P1 = 0; P2 = 0; P3 = 0;
+            @(posedge clk);
+        end
+    endtask
+
+    initial begin
+        rst = 1;
+        A = 0;
+        P1 = 0; P2 = 0; P3 = 0;
+
+        $dumpfile("Priority_Dispatch.vcd");
+        $dumpvars(0, TB_Priority_Dispatch);
+
+        // Reset FSM for 2 cycles
+        repeat (2) @(posedge clk);
+        rst = 0;
+
+        // ---- Test 1: High priority (P1) ----
+        send_call(3'b001);
+
+        // ---- Test 2: Medium priority (P2) ----
+        send_call(3'b010);
+
+        // ---- Test 3: Low priority (P3) ----
+        send_call(3'b100);
+
+        // Wait a few cycles before finishing
+        repeat (4) @(posedge clk);
+
+        $finish;
+    end
+endmodule

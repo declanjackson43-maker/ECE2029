@@ -1,0 +1,126 @@
+module tbfinal;
+
+
+
+    reg clk;
+    
+
+    reg rst_dispatch; 
+    reg rst_tracker;
+
+    reg A, P1, P2, P3;
+    reg T1, T0;
+    reg X;
+
+
+    wire engine, ambulance, ladder;
+    wire [2:0] dispatch_state;
+    wire [1:0] priority_state;
+    wire C_sel_out;
+    wire r_out;
+    wire a_out;
+
+
+    reg [31:0] dispatch_label;
+    reg [31:0] tracker_label;
+    
+    reg [7:0] test_stream = 8'b01111101;
+    integer i = 0;
+
+
+    CombinedDispatch DUT_Dispatch(
+        .clk(clk), 
+        .rst(rst_dispatch),
+        .A(A), .P1(P1), .P2(P2), .P3(P3),
+        .T1(T1), .T0(T0), 
+        .engine(engine), .ambulance(ambulance), .ladder(ladder), 
+        .dispatch_state(dispatch_state), 
+        .priority_state(priority_state),
+        .C_sel_out(C_sel_out)
+    );
+
+    statetracker DUT_Tracker(
+        .clk(clk), 
+        .reset(rst_tracker), 
+        .X(X), .r(r_out), .a(a_out)
+    );
+
+  
+    always #5 clk = ~clk;
+
+   
+    always @(dispatch_state) begin
+        case (dispatch_state)
+            3'b000: dispatch_label = "S0";
+            3'b001: dispatch_label = "S1";
+            3'b010: dispatch_label = "S2";
+            3'b011: dispatch_label = "S3";
+            3'b100: dispatch_label = "S4";
+            3'b101: dispatch_label = "S5";
+            3'b110: dispatch_label = "S6";
+            3'b111: dispatch_label = "S7";
+            default: dispatch_label = "ERR"; 
+        endcase
+    end
+
+  
+    always @(DUT_Tracker.state or rst_tracker) begin
+        if (rst_tracker) begin
+       
+            tracker_label = "S0"; 
+        end else begin
+            case (DUT_Tracker.state)
+                3'b000: tracker_label = "S0";
+                3'b001: tracker_label = "S1";
+                3'b010: tracker_label = "S2";
+                3'b011: tracker_label = "S3";
+                3'b100: tracker_label = "S4";
+                3'b101: tracker_label = "S5";
+                3'b110: tracker_label = "S6";
+                3'b111: tracker_label = "S7";
+                default: tracker_label = "ERR";
+            endcase
+        end
+    end
+
+   
+    initial begin
+        clk = 0; 
+        
+      
+        rst_dispatch = 1; 
+        rst_tracker = 1; 
+        
+        A=0; P1=0; P2=0; P3=0; T1=0; T0=0; X=0; 
+        
+      
+        dispatch_label = "INIT";
+        tracker_label  = "S0"; 
+
+      
+        #15 rst_dispatch = 0;
+
+        $display("--- Starting CombinedDispatch Tests ---");
+        
+        A=1; P1=1; P2=0; P3=0; T1=0; T0=0;
+        #40; 
+        A=0; P1=0; 
+       
+     
+        @(negedge clk); 
+        rst_tracker = 0; 
+
+        $monitor("Time: %3d | Dispatch: %s | Tracker: %s | X: %b", 
+                 $time, dispatch_label, tracker_label, X);
+
+        for (i = 7; i >= 0; i = i - 1) begin
+            @(negedge clk); 
+            X = test_stream[i];
+        end
+
+        #20;
+        $display("ALL TESTS COMPLETE");
+        $finish;
+    end
+
+endmodule
